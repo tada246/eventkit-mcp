@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.eventkit.cli</string>
+	<key>CFBundleName</key>
+	<string>eventkit-cli</string>
+	<key>CFBundleExecutable</key>
+	<string>eventkit-cli</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Read and create reminders via MCP.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Read and create calendar events via MCP.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Read and create reminders via MCP.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Read and create calendar events via MCP.</string>
+</dict>
+</plist>
