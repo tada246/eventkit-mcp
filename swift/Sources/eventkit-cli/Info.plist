@@ -13,12 +13,12 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>Read and create reminders via MCP.</string>
+	<string>Read and modify reminders via MCP.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Read and create calendar events via MCP.</string>
+	<string>Read and modify calendar events via MCP.</string>
 	<key>NSRemindersUsageDescription</key>
-	<string>Read and create reminders via MCP.</string>
+	<string>Read and modify reminders via MCP.</string>
 	<key>NSCalendarsUsageDescription</key>
-	<string>Read and create calendar events via MCP.</string>
+	<string>Read and modify calendar events via MCP.</string>
 </dict>
 </plist>

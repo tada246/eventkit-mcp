@@ -7,7 +7,9 @@ cd "$(dirname "$0")"
 # SwiftPM は -sectcreate に渡した Info.plist をビルド依存として追跡しないので、
 # Info.plist だけ変えても再リンクされない。毎回バイナリを消して確実に埋め込み直す。
 rm -f swift/.build/release/eventkit-cli
-swift build --package-path swift -c release
+# swiftly などで入れた swift は Xcode の SDK と版がずれてビルドできないことがあるので、
+# xcode-select で選ばれたツールチェーンを使う。
+xcrun swift build --package-path swift -c release
 
 APP="bin/EventKitCLI.app"
 rm -rf "$APP"

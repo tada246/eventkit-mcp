@@ -5,8 +5,13 @@ let package = Package(
     name: "eventkit-cli",
     platforms: [.macOS(.v14)],
     targets: [
+        .target(
+            name: "EventKitCore",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         .executableTarget(
             name: "eventkit-cli",
+            dependencies: ["EventKitCore"],
             exclude: ["Info.plist"],
             swiftSettings: [.swiftLanguageMode(.v5)],
             linkerSettings: [
@@ -17,6 +22,11 @@ let package = Package(
                     "-Xlinker", "\(Context.packageDirectory)/Sources/eventkit-cli/Info.plist",
                 ])
             ]
-        )
+        ),
+        .testTarget(
+            name: "EventKitCoreTests",
+            dependencies: ["EventKitCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )
