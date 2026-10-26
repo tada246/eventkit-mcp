@@ -1,4 +1,5 @@
 import EventKit
+import EventKitCore
 import Foundation
 
 struct ListOut: Encodable {
@@ -8,7 +9,7 @@ struct ListOut: Encodable {
     let isDefault: Bool
 }
 
-func cmdLists() {
+func cmdLists() throws {
     requestRemindersAccess()
     let defaultID = store.defaultCalendarForNewReminders()?.calendarIdentifier
     let out = store.calendars(for: .reminder).map {
@@ -33,16 +34,8 @@ struct ReminderOut: Encodable {
     let priorityLabel: String
     let isCompleted: Bool
     let completionDate: String?
+    let alarms: [AlarmSpec]
 }
-
-let gregorian = Calendar(identifier: .gregorian)
-
-let isoFormatter: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime]
-    f.timeZone = TimeZone.current
-    return f
-}()
 
 func priorityLabel(_ p: Int) -> String {
     switch p {
@@ -54,25 +47,8 @@ func priorityLabel(_ p: Int) -> String {
     }
 }
 
-// hour/minute が無い DateComponents は EventKit 上「終日」扱いになる。
-func formatDue(_ dc: DateComponents?) -> (String?, Bool?) {
-    guard let dc else { return (nil, nil) }
-    let allDay = dc.hour == nil && dc.minute == nil
-    var cal = gregorian
-    if let tz = dc.timeZone { cal.timeZone = tz }
-    guard let date = cal.date(from: dc) else { return (nil, allDay) }
-    if allDay {
-        let df = DateFormatter()
-        df.calendar = gregorian
-        df.timeZone = cal.timeZone
-        df.locale = Locale(identifier: "en_US_POSIX")
-        df.dateFormat = "yyyy-MM-dd"
-        return (df.string(from: date), true)
-    }
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime]
-    f.timeZone = cal.timeZone
-    return (f.string(from: date), false)
+func dueDate(for reminder: EKReminder) -> Date? {
+    reminder.dueDateComponents.flatMap(date(fromComponents:))
 }
 
 func serialize(_ r: EKReminder) -> ReminderOut {
@@ -87,7 +63,8 @@ func serialize(_ r: EKReminder) -> ReminderOut {
         priority: r.priority,
         priorityLabel: priorityLabel(r.priority),
         isCompleted: r.isCompleted,
-        completionDate: r.completionDate.map { isoFormatter.string(from: $0) }
+        completionDate: r.completionDate.map { isoFormatter.string(from: $0) },
+        alarms: reminderAlarmSpecs(from: r.alarms, due: dueDate(for: r))
     )
 }
 
@@ -123,7 +100,7 @@ func resolveLists(_ name: String) -> [EKCalendar] {
     return matched
 }
 
-func cmdReminders(_ args: Args) {
+func cmdReminders(_ args: Args) throws {
     requestRemindersAccess()
     let includeCompleted = args.has("include-completed")
     let calendars: [EKCalendar]?
@@ -145,48 +122,15 @@ struct RemindersResult: Encodable {
     let reminders: [ReminderOut]
 }
 
-// 和暦ロケールだと Calendar.current が .japanese になり、
-// dueDateComponents に入れると EventKit が例外を投げる。必ず gregorian を使う。
-// hour/minute を入れないと EventKit 側で自動的に終日扱いになる。
-func parseDue(_ s: String) -> DateComponents {
-    let dateOnly = s.count == 10 && s.contains("-") && !s.contains("T")
-    if dateOnly {
-        let df = DateFormatter()
-        df.calendar = gregorian
-        df.locale = Locale(identifier: "en_US_POSIX")
-        df.timeZone = TimeZone.current
-        df.dateFormat = "yyyy-MM-dd"
-        guard let d = df.date(from: s) else { fail("bad --due date: \(s)") }
-        return gregorian.dateComponents([.year, .month, .day], from: d)
-    }
-    let iso = ISO8601DateFormatter()
-    iso.formatOptions = [.withInternetDateTime]
-    iso.timeZone = TimeZone.current
-    var date = iso.date(from: s)
-    if date == nil {
-        // タイムゾーン省略形 "2026-08-05T15:00:00" も受ける
-        let df = DateFormatter()
-        df.calendar = gregorian
-        df.locale = Locale(identifier: "en_US_POSIX")
-        df.timeZone = TimeZone.current
-        df.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-        date = df.date(from: s)
-    }
-    guard let date else { fail("bad --due datetime: \(s) (use yyyy-MM-dd or yyyy-MM-ddTHH:mm:ss)") }
-    var dc = gregorian.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
-    dc.timeZone = TimeZone.current
-    return dc
-}
-
 struct CreateResult: Encodable {
     let created: ReminderOut
 }
 
-func cmdCreateReminder(_ args: Args) {
+func cmdCreateReminder(_ args: Args) throws {
     requestRemindersAccess()
     let title = args.value("title") ?? args.positional.first
     guard let title, !title.isEmpty else {
-        fail("usage: create-reminder --title <名前> [--list <名前>] [--due <ISO>] [--notes <メモ>] [--priority 0-9]")
+        fail("usage: create-reminder --title <名前> [--list <名前>] [--due <ISO>] [--notes <メモ>] [--priority 0-9] [--alarms '<JSON>']")
     }
 
     let reminder = EKReminder(eventStore: store)
@@ -201,13 +145,27 @@ func cmdCreateReminder(_ args: Args) {
     }
 
     if let notes = args.value("notes") { reminder.notes = notes }
-    if let due = args.value("due") { reminder.dueDateComponents = parseDue(due) }
+    let dueRaw = args.value("due")
+    let dueComponents = try dueRaw.map(parseDueComponents)
+    if let dueComponents { reminder.dueDateComponents = dueComponents }
     if let p = args.value("priority") {
         guard let n = Int(p), (0...9).contains(n) else {
             fail("--priority must be 0-9 (0=none, 1-4=high, 5=medium, 6-9=low), got: \(p)")
         }
         reminder.priority = n
     }
+
+    // 時刻付き期限で --alarms を省略したときは、期限ちょうどのアラームを既定で付ける。
+    let specs: [AlarmSpec]
+    if let raw = args.value("alarms") {
+        specs = try parseAlarms(raw)
+    } else if let dueRaw, !isDateOnly(dueRaw) {
+        specs = [AlarmSpec(minutesBefore: 0)]
+    } else {
+        specs = []
+    }
+    let due = dueComponents.flatMap(date(fromComponents:))
+    reminder.alarms = try makeReminderAlarms(specs, due: due)
 
     do {
         try store.save(reminder, commit: true)
@@ -221,17 +179,12 @@ struct CompleteResult: Encodable {
     let completed: ReminderOut
 }
 
-func cmdCompleteReminder(_ args: Args) {
+func cmdCompleteReminder(_ args: Args) throws {
     requestRemindersAccess()
     guard let id = args.positional.first ?? args.value("id"), !id.isEmpty else {
         fail("usage: complete-reminder <ID>")
     }
-    guard let item = store.calendarItem(withIdentifier: id) else {
-        fail("reminder not found: \(id)")
-    }
-    guard let reminder = item as? EKReminder else {
-        fail("id \(id) is not a reminder (it is \(type(of: item)))")
-    }
+    let reminder = try resolveReminder(id)
     if reminder.isCompleted {
         fail("already completed: \(reminder.title ?? "")")
     }
@@ -244,6 +197,119 @@ func cmdCompleteReminder(_ args: Args) {
     emit(CompleteResult(completed: serialize(reminder)))
 }
 
+func resolveReminderIDs(_ args: Args) throws -> [String] {
+    let id = args.value("id")
+    let idsRaw = args.value("ids")
+    if id != nil && idsRaw != nil {
+        throw CoreError("specify either --id or --ids, not both")
+    }
+    if let id, !id.isEmpty { return [id] }
+    if let idsRaw {
+        let ids = try decodeJSON([String].self, from: idsRaw, label: "ids")
+        guard !ids.isEmpty else { throw CoreError("--ids must not be empty") }
+        return ids
+    }
+    throw CoreError("specify --id <ID> or --ids '<JSON array>'")
+}
+
+func resolveReminder(_ id: String) throws -> EKReminder {
+    guard let item = store.calendarItem(withIdentifier: id) else {
+        throw CoreError("reminder not found: \(id)")
+    }
+    guard let reminder = item as? EKReminder else {
+        throw CoreError("id \(id) is not a reminder (it is \(type(of: item)))")
+    }
+    return reminder
+}
+
+// 全件を commit: false で積んでから最後にまとめて commit する。
+func commitBatch(_ body: () throws -> Void) {
+    do {
+        try body()
+        try store.commit()
+    } catch {
+        store.reset()
+        fail("save failed: \(error.localizedDescription)")
+    }
+}
+
+struct UpdateRemindersResult: Encodable {
+    let updated: [ReminderOut]
+}
+
+func cmdUpdateReminder(_ args: Args) throws {
+    requestRemindersAccess()
+    let ids = try resolveReminderIDs(args)
+    let reminders = try ids.map(resolveReminder)
+
+    let clear = args.clearFields()
+    let clearable: Set<String> = ["due", "notes", "alarms"]
+    let unsupported = clear.subtracting(clearable)
+    guard unsupported.isEmpty else {
+        throw CoreError("cannot clear reminder field(s): \(unsupported.sorted().joined(separator: ", "))")
+    }
+
+    let title = args.value("title")
+    let listName = args.value("list")
+    let newDue = try args.value("due").map(parseDueComponents)
+    let newAlarms = try args.value("alarms").map(parseAlarms)
+    let priority = try args.value("priority").map { raw -> Int in
+        guard let n = Int(raw), (0...9).contains(n) else {
+            throw CoreError("--priority must be 0-9 (0=none, 1-4=high, 5=medium, 6-9=low), got: \(raw)")
+        }
+        return n
+    }
+    let completed = try args.bool("completed")
+
+    for reminder in reminders {
+        if let title { reminder.title = title }
+        if let listName { reminder.calendar = resolveLists(listName)[0] }
+        if clear.contains("due") {
+            reminder.dueDateComponents = nil
+        } else if let newDue {
+            reminder.dueDateComponents = newDue
+        }
+        if clear.contains("notes") {
+            reminder.notes = nil
+        } else if let notes = args.value("notes") {
+            reminder.notes = notes
+        }
+        if let priority { reminder.priority = priority }
+        if clear.contains("alarms") {
+            reminder.alarms = []
+        } else if let newAlarms {
+            let due = clear.contains("due")
+                ? nil
+                : (newDue ?? reminder.dueDateComponents).flatMap(date(fromComponents:))
+            reminder.alarms = try makeReminderAlarms(newAlarms, due: due)
+        }
+        if let completed {
+            reminder.isCompleted = completed
+            if !completed { reminder.completionDate = nil }
+        }
+    }
+
+    commitBatch {
+        for reminder in reminders { try store.save(reminder, commit: false) }
+    }
+    emit(UpdateRemindersResult(updated: reminders.map(serialize)))
+}
+
+struct DeleteRemindersResult: Encodable {
+    let deleted: [ReminderOut]
+}
+
+func cmdDeleteReminder(_ args: Args) throws {
+    requestRemindersAccess()
+    let ids = try resolveReminderIDs(args)
+    let reminders = try ids.map(resolveReminder)
+    let deleted = reminders.map(serialize)
+    commitBatch {
+        for reminder in reminders { try store.remove(reminder, commit: false) }
+    }
+    emit(DeleteRemindersResult(deleted: deleted))
+}
+
 struct SearchResult: Encodable {
     let query: String
     let count: Int
@@ -251,20 +317,23 @@ struct SearchResult: Encodable {
     let reminders: [ReminderOut]
 }
 
-func cmdSearch(_ args: Args) {
+func cmdSearch(_ args: Args) throws {
     requestRemindersAccess()
-    guard let query = args.positional.first, !query.isEmpty else {
-        fail("usage: search <文字列> [--include-completed] [--list <名前>]")
-    }
+    let query = args.positional.first ?? ""
     let includeCompleted = args.has("include-completed")
     let calendars = args.value("list").map(resolveLists)
     let found = fetch(remindersPredicate(calendars: calendars, includeCompleted: includeCompleted))
-    // 日本語の濁点などで NFC/NFD が混在しうるので正規化してから比較する。
-    let needle = query.precomposedStringWithCanonicalMapping.lowercased()
-    let matched = found.filter { r in
-        let title = (r.title ?? "").precomposedStringWithCanonicalMapping.lowercased()
-        let notes = (r.notes ?? "").precomposedStringWithCanonicalMapping.lowercased()
-        return title.contains(needle) || notes.contains(needle)
+    let matched: [EKReminder]
+    if query.isEmpty {
+        matched = found
+    } else {
+        // 日本語の濁点などで NFC/NFD が混在しうるので正規化してから比較する。
+        let needle = query.precomposedStringWithCanonicalMapping.lowercased()
+        matched = found.filter { r in
+            let title = (r.title ?? "").precomposedStringWithCanonicalMapping.lowercased()
+            let notes = (r.notes ?? "").precomposedStringWithCanonicalMapping.lowercased()
+            return title.contains(needle) || notes.contains(needle)
+        }
     }
     emit(SearchResult(
         query: query, count: matched.count,

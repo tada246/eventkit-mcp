@@ -26,10 +26,23 @@ func statusName(_ s: EKAuthorizationStatus) -> String {
 
 private func awaitAccess(
     _ label: String,
+    _ settingsName: String,
     _ entity: EKEntityType,
     _ request: (@escaping (Bool, Error?) -> Void) -> Void
 ) {
     let before = EKEventStore.authorizationStatus(for: entity)
+    let timeout = Double(ProcessInfo.processInfo.environment["EVENTKIT_CLI_ACCESS_TIMEOUT"] ?? "") ?? 30
+    let guidance = "System Settings > Privacy & Security > \(settingsName)"
+    switch before {
+    case .denied, .restricted:
+        fail("\(label) access is \(statusName(before)). Allow access in \(guidance), then retry.")
+    case .notDetermined:
+        FileHandle.standardError.write(Data(
+            "A macOS \(settingsName) permission dialog should be on screen. Grant access to continue (waiting up to \(Int(timeout))s).\n".utf8))
+    default:
+        break
+    }
+
     let sem = DispatchSemaphore(value: 0)
     var granted = false
     var failure: Error?
@@ -39,22 +52,21 @@ private func awaitAccess(
         sem.signal()
     }
     // 初回は TCC ダイアログをユーザーがクリックするまで待つ。
-    let timeout = Double(ProcessInfo.processInfo.environment["EVENTKIT_CLI_ACCESS_TIMEOUT"] ?? "") ?? 20
     if sem.wait(timeout: .now() + timeout) == .timedOut {
-        fail("\(label) access request timed out after \(Int(timeout))s (status=\(statusName(before))). 初回は権限ダイアログの操作が必要です。")
+        fail("\(label) access request timed out after \(Int(timeout))s (status=\(statusName(before))). Check the screen for the permission dialog, or allow access in \(guidance).")
     }
     if !granted {
         let after = EKEventStore.authorizationStatus(for: entity)
-        fail("\(label) access denied (status before=\(statusName(before)) after=\(statusName(after)), pid=\(getpid()), responsible=\(pathForPID(responsiblePID()))): \(failure?.localizedDescription ?? "no error")")
+        fail("\(label) access denied (status before=\(statusName(before)) after=\(statusName(after)), pid=\(getpid()), responsible=\(pathForPID(responsiblePID()))): \(failure?.localizedDescription ?? "no error"). Allow access in \(guidance).")
     }
 }
 
 func requestRemindersAccess() {
-    awaitAccess("reminders", .reminder) { store.requestFullAccessToReminders(completion: $0) }
+    awaitAccess("reminders", "Reminders", .reminder) { store.requestFullAccessToReminders(completion: $0) }
 }
 
 func requestCalendarAccess() {
-    awaitAccess("calendar", .event) { store.requestFullAccessToEvents(completion: $0) }
+    awaitAccess("calendar", "Calendars", .event) { store.requestFullAccessToEvents(completion: $0) }
 }
 
 func emit<T: Encodable>(_ value: T) {

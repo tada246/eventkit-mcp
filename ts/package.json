@@ -1,10 +1,12 @@
 {
   "name": "eventkit-mcp",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "npm run build && node --test test/unit.test.mjs test/mcp.test.mjs",
+    "test:e2e": "node --test test/e2e.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0"
